@@ -83,7 +83,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # self.ui.degree_button.clicked.connect(self.set_degree_of_polynomial)
         self.ui.one_main_chunk_button.clicked.connect(self.display_one_main_chunk)
         self.ui.pushButton_3.clicked.connect(self.plot_data_splitted_with_chunks)
-        self.ui.pushButton.clicked.connect(self.error_map_with_no_overlap)
+        self.ui.pushButton.clicked.connect(self.error_map)
         self.ui.pushButton_2.clicked.connect(self.reset)
         self.ui.pushButton_4.clicked.connect(self.display_latex_equation_for_each_chunk)
         self.ui.pushButton_5.clicked.connect(self.clipping_signal_and_applying_extrapolation)
@@ -93,6 +93,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.overlap_slider.valueChanged.connect(self.set_overlap_percentage)
         self.ui.horizontalSlider.valueChanged.connect(self.set_degree_of_polynomial_of_one_main_chunk)
         self.ui.extrapolation_slider.valueChanged.connect(self.set_extrapolation_percentage)
+        self.x_axes_text = [
+            "Number of Chunks",
+            "Polynomial Degree",
+            "Overlap Percentage"
+        ]
+        self.y_axes_text = [
+            "Polynomial Degree",
+            "Number of Chunks",
+            "Overlap Percentage"
+        ]
 
     def set_table_rows(self):
         self.ui.tableWidget.setItem(1, 0, QtWidgets.QTableWidgetItem("Number OF Chunks"))
@@ -165,6 +175,61 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(e)
 
+    def get2DErrorArray(self, polynomialOrderVals, overlappingSizePercentageVals, numberOfChunksVals):
+
+        if (len(polynomialOrderVals) != 1 and len(numberOfChunksVals) != 1):
+            errorMap = np.zeros((len(polynomialOrderVals),len(numberOfChunksVals)))
+        elif (len(polynomialOrderVals) != 1):
+            errorMap = np.zeros((len(polynomialOrderVals),len(overlappingSizePercentageVals)))
+        else:
+            errorMap = np.zeros((len(overlappingSizePercentageVals),len(numberOfChunksVals)))
+
+        for polynomialOrder in polynomialOrderVals:
+            for overlappingSizePercentage in overlappingSizePercentageVals:
+                for numberOfChunks in numberOfChunksVals:
+                    
+                    xAxesChunksValues = np.array_split(self.time_value,numberOfChunks)
+                    yAxesChunksValues = np.array_split(self.amplitude_value,numberOfChunks)
+
+                    chunkSize = int(len(self.time_value) / numberOfChunks)
+                    overlappedPointsNumber = int(chunkSize * overlappingSizePercentage /100)
+                    resError = 0
+
+                    for chunkIndex in range(numberOfChunks):
+
+                        chunkStartIndex = (chunkIndex)*len(xAxesChunksValues[chunkIndex])
+                        chunkEndIndex = chunkStartIndex + len(xAxesChunksValues[chunkIndex])
+
+                        if (numberOfChunks > 1):
+                            
+                            # case 1: we want append to the first chunk
+                            if (chunkIndex == 0):
+                                chunkEndIndex += overlappedPointsNumber
+                            # case 2: we want to append to the last chunk
+                            elif (chunkIndex == (numberOfChunks - 1)):
+                                chunkStartIndex -= overlappedPointsNumber
+                            # case 3: we want to append to a mid chunk
+                            else:
+                                chunkStartIndex -= int(overlappedPointsNumber/2)
+                                chunkEndIndex += int(np.ceil(overlappedPointsNumber/2))
+
+                        xAxesChunksValues[chunkIndex] = self.time_value[chunkStartIndex:chunkEndIndex]
+                        yAxesChunksValues[chunkIndex] = self.amplitude_value[chunkStartIndex:chunkEndIndex]
+                        polynomial = np.polyfit(xAxesChunksValues[chunkIndex], yAxesChunksValues[chunkIndex], polynomialOrder)  
+                        resError += np.sum((np.polyval(polynomial, xAxesChunksValues[chunkIndex]) - yAxesChunksValues[chunkIndex])**2)
+                    
+                    resError /= numberOfChunks
+                    error = np.sqrt(resError/(len(self.time_value)-2)) 
+                    
+                    if (len(polynomialOrderVals) != 1 and len(numberOfChunksVals) != 1):
+                        errorMap[polynomialOrder - 1][numberOfChunks - 1] = error
+                    elif (len(polynomialOrderVals) != 1):
+                        errorMap[polynomialOrder - 1][int(overlappingSizePercentage)] = error
+                    else:
+                        errorMap[int(overlappingSizePercentage/5)][numberOfChunks - 1] = error
+
+        return errorMap
+
     def error_map(self):
         try:
             progress_bar_value = 0
@@ -173,172 +238,190 @@ class MainWindow(QtWidgets.QMainWindow):
             self.full_matrix_error_map = []
             x_axis_element = self.ui.comboBox.currentIndex()
             y_axis_element = self.ui.comboBox_2.currentIndex()
+
             # print(x_axis_element, y_axis_element)
 
-            if x_axis_element == 1:
-                if y_axis_element == 1:
-                    # Number Of Chunks is on Y_axis, Polynomial Degree is on X-axis, overlap_percentage remains constant:
-                    time_overall_data, chunks_overall_data = \
-                        self.dividing_chunks_using_overlap_percentage_for_error_map(self.overlap_percentage,
-                                                                                    self.number_of_chunks)
-                    for chunk_number in range(0, self.number_of_chunks):
-                        chunk_data = chunks_overall_data[chunk_number]
-                        time_data = time_overall_data[chunk_number]
-                        self.row_of_error_map = []
-                        for degree in range(1, self.degree_of_polynomial + 1):
-                            coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                    degree),2)
-                            amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                            error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                            self.row_of_error_map.append(error_percentage)
+            polynomialArray = [5] if x_axis_element or y_axis_element else range(1, self.degree_of_polynomial+1)
 
-                        progress_bar_value += chunk_number * 5
-                        self.ui.progressBar.setValue(progress_bar_value)
-                        self.full_matrix_error_map.append(self.row_of_error_map)
+            degree_of_polynomial_indexed = range(1,self.degree_of_polynomial + 1) if x_axis_element == 1 or y_axis_element == 0 else [self.degree_of_polynomial]
+            overlap_percentage_indexed = range(0,self.overlap_percentage) if x_axis_element == 2 or y_axis_element == 2 else [self.overlap_percentage]
+            number_of_chunks_indexed = range(1,self.number_of_chunks) if x_axis_element == 0 or y_axis_element == 1 else [self.number_of_chunks]
+            
+            errorMap = self.get2DErrorArray(degree_of_polynomial_indexed, overlap_percentage_indexed, number_of_chunks_indexed)
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Polynomial Degree", "Number Of Chunks")
-                    self.ui.progressBar.setValue(100)
-                if y_axis_element == 2:
-                    # X_axis is Degree of polynomial and Y_axis is overlap Percentage and number of chunks is constant:
-                    for percentage in range(1, self.overlap_percentage + 1):
-                        percentage /= 100
-                        time_overall_data, chunks_overall_data = \
-                            self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
-                                                                                        self.number_of_chunks)
-                        for degree in range(1, self.degree_of_polynomial + 1):
-                            self.row_of_error_map = []
-                            for chunk_number in range(0, self.number_of_chunks):
-                                chunk_data = chunks_overall_data[chunk_number]
-                                time_data = time_overall_data[chunk_number]
-                                coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                                  degree), 2)
-                                amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                                # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
-                                error_percentage = round(
-                                    self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                                self.row_of_error_map.append(error_percentage)
+            if (y_axis_element == 1) or (x_axis_element == 1) or (y_axis_element == 2 and x_axis_element == 1):
+                errorMap = np.transpose(errorMap) 
+            # swap  prio: number of chunks-yaxes  -> poly-xaxex -> over-poly
+            
+            # errorMap = np.flip(errorMap,0)
+            self.plot_error_map(errorMap, self.x_axes_text[x_axis_element], self.y_axes_text[y_axis_element])
 
-                        self.full_matrix_error_map.append(self.row_of_error_map)
-                        progress_bar_value += int(percentage * 100) * 3
-                        self.ui.progressBar.setValue(progress_bar_value)
+            # for deg
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Degree Of Polynomial", "Overlap Percentage")
-                    self.ui.progressBar.setValue(100)
+            # if x_axis_element == 1:
+            #     if y_axis_element == 1:
+            #         # Number Of Chunks is on Y_axis, Polynomial Degree is on X-axis, overlap_percentage remains constant:
+            #         time_overall_data, chunks_overall_data = \
+            #             self.dividing_chunks_using_overlap_percentage_for_error_map(self.overlap_percentage,
+            #                                                                         self.number_of_chunks)
+            #         for chunk_number in range(0, self.number_of_chunks):
+            #             chunk_data = chunks_overall_data[chunk_number]
+            #             time_data = time_overall_data[chunk_number]
+            #             self.row_of_error_map = []
+            #             for degree in range(1, self.degree_of_polynomial + 1):
+            #                 coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                         degree),2)
+            #                 amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                 error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                 self.row_of_error_map.append(error_percentage)
 
-            elif x_axis_element == 0:
-                if y_axis_element == 0:
-                    # Number Of Chunks is on X_axis, Polynomial Degree is on Y-axis, overlap_percentage is constant:
-                    time_overall_data, chunks_overall_data = \
-                        self.dividing_chunks_using_overlap_percentage_for_error_map(self.overlap_percentage,
-                                                                                    self.number_of_chunks)
-                    for degree in range(1, self.degree_of_polynomial + 1):
-                        self.row_of_error_map = []
-                        for chunk_number in range(0, self.number_of_chunks):
-                            chunk_data = chunks_overall_data[chunk_number]
-                            time_data = time_overall_data[chunk_number]
-                            coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                    degree),2)
-                            amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                            # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
-                            error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                            self.row_of_error_map.append(error_percentage)
+            #             progress_bar_value += chunk_number * 5
+            #             self.ui.progressBar.setValue(progress_bar_value)
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
 
-                        progress_bar_value += degree * 5
-                        self.ui.progressBar.setValue(progress_bar_value)
-                        self.full_matrix_error_map.append(self.row_of_error_map)
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Polynomial Degree", "Number Of Chunks")
+            #         self.ui.progressBar.setValue(100)
+            #     if y_axis_element == 2:
+            #         # X_axis is Degree of polynomial and Y_axis is overlap Percentage and number of chunks is constant:
+            #         for percentage in range(1, self.overlap_percentage + 1):
+            #             percentage /= 100
+            #             time_overall_data, chunks_overall_data = \
+            #                 self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
+            #                                                                             self.number_of_chunks)
+            #             for degree in range(1, self.degree_of_polynomial + 1):
+            #                 self.row_of_error_map = []
+            #                 for chunk_number in range(0, self.number_of_chunks):
+            #                     chunk_data = chunks_overall_data[chunk_number]
+            #                     time_data = time_overall_data[chunk_number]
+            #                     coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                                       degree), 2)
+            #                     amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                     # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
+            #                     error_percentage = round(
+            #                         self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                     self.row_of_error_map.append(error_percentage)
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Number Of Chunks", "Polynomial Degree")
-                    self.ui.progressBar.setValue(100)
-                if y_axis_element == 2:
-                    # X_axis is Number of chunks and Y_axis is overlap Percentage and poly_degree is constant:
-                    for percentage in range(1, self.overlap_percentage + 1):
-                        self.row_of_error_map = []
-                        percentage /= 100
-                        time_overall_data, chunks_overall_data = \
-                            self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
-                                                                                        self.number_of_chunks)
-                        for chunk_number in range(0, self.number_of_chunks):
-                            chunk_data = chunks_overall_data[chunk_number]
-                            time_data = time_overall_data[chunk_number]
-                            coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                              self.degree_of_polynomial), 2)
-                            amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                            # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
-                            error_percentage = round(
-                                self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                            self.row_of_error_map.append(error_percentage)
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
+            #             progress_bar_value += int(percentage * 100) * 3
+            #             self.ui.progressBar.setValue(progress_bar_value)
 
-                        progress_bar_value += int(percentage * 100) * 3
-                        self.ui.progressBar.setValue(progress_bar_value)
-                        self.full_matrix_error_map.append(self.row_of_error_map)
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Degree Of Polynomial", "Overlap Percentage")
+            #         self.ui.progressBar.setValue(100)
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Number of Chunks", "Overlap Percentage")
-                    self.ui.progressBar.setValue(100)
+            # elif x_axis_element == 0:
+            #     if y_axis_element == 0:
+            #         # Number Of Chunks is on X_axis, Polynomial Degree is on Y-axis, overlap_percentage is constant:
+            #         time_overall_data, chunks_overall_data = \
+            #             self.dividing_chunks_using_overlap_percentage_for_error_map(self.overlap_percentage,
+            #                                                                         self.number_of_chunks)
+            #         for degree in range(1, self.degree_of_polynomial + 1):
+            #             self.row_of_error_map = []
+            #             for chunk_number in range(0, self.number_of_chunks):
+            #                 chunk_data = chunks_overall_data[chunk_number]
+            #                 time_data = time_overall_data[chunk_number]
+            #                 coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                         degree),2)
+            #                 amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                 # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
+            #                 error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                 self.row_of_error_map.append(error_percentage)
 
-            elif x_axis_element == 2:
-                if y_axis_element == 0:
-                    # X_axis is Overlap Percentage and Y_axis is degree of polynomial and number of chunks is constant
-                    for degree in range(1, self.degree_of_polynomial+1):
-                        for percentage in range(1, self.overlap_percentage+1):
-                            percentage /= 100
-                            self.row_of_error_map = []
-                            time_overall_data, chunks_overall_data = \
-                                self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
-                                                                                            self.number_of_chunks)
-                            for chunk_number in range(0, self.number_of_chunks):
-                                chunk_data = chunks_overall_data[chunk_number]
-                                time_data = time_overall_data[chunk_number]
-                                coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                        degree),2)
-                                amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                                error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                                self.row_of_error_map.append(error_percentage)
+            #             progress_bar_value += degree * 5
+            #             self.ui.progressBar.setValue(progress_bar_value)
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
 
-                        self.full_matrix_error_map.append(self.row_of_error_map)
-                        progress_bar_value += degree * 3
-                        self.ui.progressBar.setValue(progress_bar_value)
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Number Of Chunks", "Polynomial Degree")
+            #         self.ui.progressBar.setValue(100)
+            #     if y_axis_element == 2:
+            #         # X_axis is Number of chunks and Y_axis is overlap Percentage and poly_degree is constant:
+            #         for percentage in range(1, self.overlap_percentage + 1):
+            #             self.row_of_error_map = []
+            #             percentage /= 100
+            #             time_overall_data, chunks_overall_data = \
+            #                 self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
+            #                                                                             self.number_of_chunks)
+            #             for chunk_number in range(0, self.number_of_chunks):
+            #                 chunk_data = chunks_overall_data[chunk_number]
+            #                 time_data = time_overall_data[chunk_number]
+            #                 coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                                   self.degree_of_polynomial), 2)
+            #                 amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                 # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
+            #                 error_percentage = round(
+            #                     self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                 self.row_of_error_map.append(error_percentage)
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Overlap Percentage", "Degree Of Polynomial")
-                    self.ui.progressBar.setValue(100)
-                if y_axis_element == 1:
-                    # X_axis is Overlap Percentage and y_axis is number of chunks and degree of polynomial is constant:
-                    for chunk_number in range(0, self.number_of_chunks):
-                        self.row_of_error_map = []
-                        for percentage in range(1, self.overlap_percentage + 1):
-                            percentage /= 100
-                            time_overall_data, chunks_overall_data = \
-                                self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
-                                                                                            self.number_of_chunks)
-                            chunk_data = chunks_overall_data[chunk_number]
-                            time_data = time_overall_data[chunk_number]
-                            coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
-                                                                              self.degree_of_polynomial), 2)
-                            amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
-                            # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
-                            error_percentage = round(
-                                self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
-                            self.row_of_error_map.append(error_percentage)
+            #             progress_bar_value += int(percentage * 100) * 3
+            #             self.ui.progressBar.setValue(progress_bar_value)
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
 
-                        self.full_matrix_error_map.append(self.row_of_error_map)
-                        progress_bar_value += chunk_number * 3
-                        self.ui.progressBar.setValue(progress_bar_value)
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Number of Chunks", "Overlap Percentage")
+            #         self.ui.progressBar.setValue(100)
 
-                    # Plotting the Error Map:
-                    # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
-                    self.plot_error_map(self.full_matrix_error_map, "Overlap Percentage", "Number Of Chunks")
-                    self.ui.progressBar.setValue(100)
-            else:
-                print("Invalid Axes Elements! Choose Two different elements from each combo box")
+            # elif x_axis_element == 2:
+            #     if y_axis_element == 0:
+            #         # X_axis is Overlap Percentage and Y_axis is degree of polynomial and number of chunks is constant
+            #         for degree in range(1, self.degree_of_polynomial+1):
+            #             for percentage in range(1, self.overlap_percentage+1):
+            #                 percentage /= 100
+            #                 self.row_of_error_map = []
+            #                 time_overall_data, chunks_overall_data = \
+            #                     self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
+            #                                                                                 self.number_of_chunks)
+            #                 for chunk_number in range(0, self.number_of_chunks):
+            #                     chunk_data = chunks_overall_data[chunk_number]
+            #                     time_data = time_overall_data[chunk_number]
+            #                     coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                             degree),2)
+            #                     amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                     error_percentage = round(self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                     self.row_of_error_map.append(error_percentage)
+
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
+            #             progress_bar_value += degree * 3
+            #             self.ui.progressBar.setValue(progress_bar_value)
+
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Overlap Percentage", "Degree Of Polynomial")
+            #         self.ui.progressBar.setValue(100)
+            #     if y_axis_element == 1:
+            #         # X_axis is Overlap Percentage and y_axis is number of chunks and degree of polynomial is constant:
+            #         for chunk_number in range(0, self.number_of_chunks):
+            #             self.row_of_error_map = []
+            #             for percentage in range(1, self.overlap_percentage + 1):
+            #                 percentage /= 100
+            #                 time_overall_data, chunks_overall_data = \
+            #                     self.dividing_chunks_using_overlap_percentage_for_error_map(percentage,
+            #                                                                                 self.number_of_chunks)
+            #                 chunk_data = chunks_overall_data[chunk_number]
+            #                 time_data = time_overall_data[chunk_number]
+            #                 coefficients_of_fitted_eqn = np.around(np.polyfit(time_data, chunk_data,
+            #                                                                   self.degree_of_polynomial), 2)
+            #                 amplitude_fitted_values = np.polyval(coefficients_of_fitted_eqn, time_data)
+            #                 # error_percentage = mean_absolute_error(chunk_data, amplitude_fitted_values) * 100
+            #                 error_percentage = round(
+            #                     self.calculate_error_percentage(chunk_data, amplitude_fitted_values), 4)
+            #                 self.row_of_error_map.append(error_percentage)
+
+            #             self.full_matrix_error_map.append(self.row_of_error_map)
+            #             progress_bar_value += chunk_number * 3
+            #             self.ui.progressBar.setValue(progress_bar_value)
+
+            #         # Plotting the Error Map:
+            #         # self.full_matrix_error_map = np.flip(self.full_matrix_error_map, 0)
+            #         self.plot_error_map(self.full_matrix_error_map, "Overlap Percentage", "Number Of Chunks")
+            #         self.ui.progressBar.setValue(100)
+            # else:
+            #     print("Invalid Axes Elements! Choose Two different elements from each combo box")
 
         except Exception as e:
             print(e)
@@ -517,13 +600,14 @@ class MainWindow(QtWidgets.QMainWindow):
         error_ax = self.error_map_figure.gca()
         error_ax.cla()
         errormap_plot = plt.imshow(matrix)
-        error_ax.imshow(matrix)
+        error_ax.imshow(matrix, origin = 'lower')
         error_ax.set_ylabel(y_label)
         error_ax.set_xlabel(x_label)
         error_ax.set_title("Error Map!")
         # error_ax.set_xticks([])
         # error_ax.set_yticks([])
         error_map_figure.colorbar(errormap_plot, ax=error_ax)
+        error_map_figure.tight_layout()
         self.error_map_canvas.draw()
         self.error_map_canvas.flush_events()
 
